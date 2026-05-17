@@ -225,3 +225,6 @@ The CPU is also capable of several other features:
   * When the function returns, the stack is popped and the execution resumes.
   There is no limit to the depth of the stack: once it is defined, it is limited only by the amount of memory available.
 - Programmable interrupts: it is possible to attach specific ISR (interrupt subroutines) to specific interrupt codes (at the moment this is only implemented for the UART devices).
+
+### Performance
+The following considerations where made with the device's clock running at 100 MHz. It was found that each instruction byte was loaded from the SRAM in approximately $(1.210\pm0.002)\mu s$ and so a full instruction is loaded in $\approx 12 \mu s$. Conversely, the execution time of an instruction is approximately of $(12.400\pm0.002)\mu s$. This time covers everything from instruction and operand fetch, execution, writeback and jump. The vast majority of this time is devoted to SRAM operation with only $\approx 300 ns$ being spent between operand fetching, execution, writeback and jump. The SUBLEQ execution itself requires exactly $1$ clock cycle to be executed, whereas all the ancillary logic takes up the remaining $\approx 29$ cycles.

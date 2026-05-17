@@ -40,67 +40,79 @@ This connection is completely transparent to the other devices, including the CU
 
 ## CPU architecture - Internal Modules
 The CPU contains two main modules: the core and the interrupt handler.
+
 ### Core
-The core contains the fetch-execute cycle, the ALU, the internal registers and an additional sub-module that is used to do bit-manipulation. This is too memory mapped and so bit-manipulation is triggered by simply reading and writing to appropriate virtual registers. Here is a schema of the device's registers:
+The core contains the fetch-execute cycle, the ALU, the internal registers and an additional sub-module that is used to do bit-manipulation. This is too memory mapped and so bit-manipulation is triggered by simply reading and writing to appropriate virtual registers. Here is a schema of the device's registers.
 <p align="center"><img src="./img/regs.png"></p>
 
+So there are 32-bit specialized registers:
+- tmp0, tmp1 and tmp2: general purpose registers.
+- fstt: flags and status register
+- stkp: stack pointer
+- pgcn: program counter
+- alub: B-operand in the ALU
+- jmpr: jump register
+- scr0, scr1: scratchpad registers
+- isri0, isri1, isri2, isri3, isri4, isri5: interrupt service routines pointers
+And then general purpose registers:
+- a, a1, a2, a3, b, b1, b2, b3, ..., h, h1, h2, h3 : 8-bit registers
+- ea, eb, ..., eh: 16-bit registers as logical groupings of two 8-bit registers. For instance: ea = a1 (higher), a (lower), etc
+- eax, ebx, ..., ehx : 32-bit registers as logical groupings of four 8-bit registers. For instance: eax = a3, a2, a1, a, etc.
 
-## OISC Core
-### SUBLEQ instruction and Addressing Modes
-The SoC core is an OISC processor that implements the `SUBLEQ` instruction which requires three operands A, B and C (more on addressing modes later)
+### Interrupt handler
+This module receives the interrupt requests and makes the CPU execute the appropriate service routine.
+
+### Instructions
+The instruction is essentially an arithmetic operation (subtraction) followed by a branch depending on the sign and modulo of the result. It is called `SUBLEQ` (SUbtract and Branch if Less or EQual to zero). The instruction consists of three operands A, B, C:
+- A and B are subtracted together: B = B - A
+- C contains a memory address.
+The following subtraction and branch is performed:
 ```
-  SUBLEQ  A  B  C
+B = B - A
+IF B <= 0 THEN program_counter = C
+ELSE program_counter = program_counter + 1
 ```
-this instruction does the following:
-```
-  B = B - A
-  IF (B <= 0) THEN jump to address C
-  ELSE jump to next address
-```
+
+### Addressing Modes
 There are three addressing modes: immediate, direct and indirect.
 - Immediate: the operand value is treated as data. This is specified with a "!" symbol right before the numerical value.
 - Direct: the operand value is its memory address. No additional symbols are required to define this.
 - Indirect: the operand value is an address that points to another address. This is specified by the "@" symbol right before the value.
 
-In the following, some OISC assembly will be introduced. The comments are started with the ";" character, the labels instead are terminated with ":". Each line requires exactly three operands.
+When moving data between registers, if the target register has a dimension which is less than the source's, the data is automatically truncated.
+
+For instance here is a short program snippet in OISC assembly. Each line represents an instruction with the three operands. Comments start with ";" symbol.
+This short program clears registers A and B, then loads the number "2" in register B.
 ```
-  ; initializing two memory locations labelled by T and V
-  0:  T  T  +1  ; mem[T] = mem[T] - mem[T] = 0
-  1:  V  V  +1  ; mem[V] = mem[V] - mem[V] = 0
-  ; loading T with -2 and then moving it to V
-  1: !2  T  +1  ; mem[T] = mem[T] - 2 = 0 - 2 = -2
-  3:  T  V  +1  ; mem[V] = mem[V] - mem[T] = 0 - (-2) = +2
-```
-Another example with more complex indirect addressing with an array T with two elements (-2, -3):
-```
-; loading the address '1234' into memory location T
-0:  T      T  +1      ; mem[T] = 0
-1:  P      P  +1      ; mem[P] = 0
-2:  !1234  P  +1      ; mem[P] = -1234
-3:  P      T  +1      ; mem[T] = 1234
-; clearing memory at address '1234'
-4:  @T    @T  +1      ; mem[mem[T]] = 0
-; placing value "-2" at base address 1234
-5:  !2    @T  +1      ; mem[mem[T]] = -2
-; incrementing the address by 1
-6:  P      P  +1      ; mem[P] = 0     
-7:  !1     P  +1      ; mem[P] = -1
-8:  P      T  +1      ; mem[T] = 1234 - (-1) = 1235
-; clearing memory at address '1235'
-9:  @T    @T  +1      ; mem[mem[T]] = 0
-; placing value "-3" at address 1235
-10: !3    @T  +1      ; mem[mem[T]] = -3
+Line 1:    A    A    +1    ; mem[A] = mem[A] - mem[A] = 0
+Line 2:    B    B    +1    ; mem[B] = mem[B] - mem[B] = 0
+Line 3:    !2   A    +1    ; mem[A] = mem[A] - 2 = -2
+Line 4:    A    B    +1    ; mem[B] = mem[B] - mem[A] = 0 - (-2) = 2
 ```
 
+It is also possible to do IF flow control. For instance the condition: `if (a >= 2) then IF_TRUE else IF_FALSE` can be implemented in this way:
+```
+; copying ’a’ to ’c’ to do non-destructive test
+0: b    b    +1    ; b = 0
+1: a    b    +1    ; b = -a
+2: c    c    +1    ; c = 0
+3: b    c    +1    ; c = a
+; if (a >= 2)
+4: !2   c    +2         ; c = c - 2
+5: c    c    IF_TRUE    ; if we’re here, c-2 > 0
+6: !255 c    +2         ; if we’re here, c-2 <= 0
+7: c    c    IF_TRUE    ; (c-2+1) > 0, so it was 0
+8: c    c    IF_FALSE   ; c-2 < 0
+```
 
-## System design
-The system is designed as a series of modules attached to the system bus via a common interface. The idea is that each module implements the same bus interface and signalling logic, so that creating a new module is straightforward since one does not need to care about re-creating the bus interfacing logic each time.
+### Data Types and Instruction Word
+The CPU works with signed integers in 2's complement, and it supports 8 bit (int), 16 bit (long) and 32 bit (longlong) numbers. Further:
+- Each operand is represented by 3 bytes.
+- An additional byte is required to specify both the addressing mode and the data sizes of the operands. Specifically the leading byte is so structured:
+  * bits 1:0 A operand addressing mode
+  * bits 3:2 B operand addressing mode
+  * bits 5:4 A operand data size
+  * bits 7:6 B operand data size
+- The C operand data size is always fixed and its addresing modes are encoded in the MSB of its address.
 
-### Memory model
-The initial driving phylosophy behind this project was to make it so each module, down to its registers, could be memory mapped.
-
-### The system bus
-The system bus is an internal 32-bit wide bus where bits `7:0` are reserved for the data byte, bits `30:8` are used for the address and the MSB `31` is the bus command bit. The bus also uses several control lines in order to properly orchestrate data transmission. These signals are automatically handled by the bus transceiver interface that each module implements.
-
-#### Bus Arbitration and Mastering
-The bus uses arbitration and at any given time only one module can be the master while all the other module transceivers are forced to stay either in standby or slave mode. A module may request to master the bus by rising an appropriate signal to the bus arbiter. An elementary logic prevents the same module from repeatedly owning the bus, effectively starving the other modules. Once a master has been granted the bus, it can initiate bus transactions with other modules. Each module owns a specific set of memory addresses
+In the end the instruction word is of fixed length at 80 bits.
